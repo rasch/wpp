@@ -1,0 +1,107 @@
+#!/bin/sh
+
+usage() {
+  ${PAGER:-cat} <<EOF
+Usage: ${0##*/} [[stop] port] | [help]
+
+  stop   If the string 'stop' is passed as the first argument the
+         containers/pod running on 'port' will be stopped.
+
+  port   Must be an intger between 1024 and 65535. Default: 8080
+
+  help   Show this help menu.
+
+
+Quick Start
+
+  Create project directory structure.
+
+      mkdir my-project
+      cd my-project
+
+  Place 'themes' and 'plugins' to load in their respective directories.
+  A directory named 'db' will be created automatically to store the
+  WordPress database. Run ${0##*/} as shown in the examples below and
+  check out the site running at http://<ip address>:8080. By default
+  the port used is 8080 but if more than one WordPress instance is
+  needed at a time then the port parameter must be given since 8080
+  will already be in use.
+
+Examples
+
+  Run WordPress and MariaDB on port 8080.
+
+      ${0##*/}
+
+  Stop WordPress and MariaDB instance running on port 8080.
+
+      ${0##*/} stop
+
+  Same as above except on port 3000.
+
+      ${0##*/} 3000
+      ${0##*/} stop 3000
+
+
+Environment Variables
+
+  WPP_DB       The Database to use. Must be one of mysql or mariadb.
+               Default: mariadb
+
+  WPP_TAG      Tag for WordPress image to use. Default: latest
+
+  WPP_DB_TAG   Tag for Database to use. Default: latest
+EOF
+}
+
+test "$1" = help && { usage; exit; }
+
+if test "$1" = stop; then
+  port="${2:-8080}"
+
+  podman stop wordpress"$port" wordpressdb"$port"
+  podman pod rm --force wp"$port"
+
+  exit
+fi
+
+port="${1:-8080}"
+
+test "$port" -ge 1024 -a "$port" -le 65535 2>/dev/null || \
+  { usage >&2; exit 1; }
+
+test -z "$WPP_DB" -o "$WPP_DB" = mysql -o "$WPP_DB" = mariadb || \
+  { usage >&2; exit 1; }
+
+# Init WordPress and database directories.
+mkdir -p ./db ./plugins ./themes ./uploads
+
+# Create pod to run WordPress and MariaDB/MySQL.
+podman pod create --name wp"$port" --publish "$port":80
+
+# Start MariaDB/MySQL container.
+podman run --rm \
+  --detach \
+  --env MYSQL_DATABASE=wordpress \
+  --env MYSQL_USER=username \
+  --env MYSQL_PASSWORD=password \
+  --env MYSQL_RANDOM_ROOT_PASSWORD=1 \
+  --name wordpressdb"$port" \
+  --pod wp"$port" \
+  --volume ./db:/var/lib/mysql \
+  docker.io/"${WPP_DB:-mariadb}:${WPP_DB_TAG:-latest}"
+
+# Start WordPress container.
+podman run --rm \
+  --detach \
+  --env WORDPRESS_DB_HOST=127.0.1.1:3306 \
+  --env WORDPRESS_DB_USER=username \
+  --env WORDPRESS_DB_PASSWORD=password \
+  --env WORDPRESS_DB_NAME=wordpress \
+  --env WORDPRESS_DEBUG=1 \
+  --name wordpress"$port" \
+  --pod wp"$port" \
+  --volume ./plugins:/var/www/html/wp-content/plugins \
+  --volume ./themes:/var/www/html/wp-content/themes \
+  --volume ./uploads:/var/www/html/wp-content/uploads \
+  docker.io/wordpress:"${WPP_TAG:-latest}"
